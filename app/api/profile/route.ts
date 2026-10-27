@@ -13,6 +13,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Password settings must only be handled by the dedicated auth endpoints.
+    if (key !== 'history_row_count') {
+      return NextResponse.json({ success: false, error: 'Setting is not accessible' }, { status: 403 });
+    }
     const value = await getProfileSetting(key);
 
     return NextResponse.json({ success: true, key, value });
@@ -37,6 +41,12 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    if (key !== 'history_row_count') {
+      return NextResponse.json({ success: false, error: 'Setting is not writable' }, { status: 403 });
+    }
+    if (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > 1000) {
+      return NextResponse.json({ success: false, error: 'Invalid history row count' }, { status: 400 });
+    }
     const result = await setProfileSetting(key, String(value));
 
     return NextResponse.json({ success: true, data: result });

@@ -32,7 +32,7 @@ const Navbar = () => {
             </svg>
           </div>
           <div className="navbar-content">
-            <h1 className="navbar-title">Adimology Calculator</h1>
+            <h1 className="navbar-title">poe-nya-Bandar</h1>
             <p className="navbar-subtitle">Analyze stock targets based on broker summary</p>
           </div>
         </div>

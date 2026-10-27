@@ -71,7 +71,9 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
   const [agentStories, setAgentStories] = useState<AgentStoryResult[]>([]);
   const [storyStatus, setStoryStatus] = useState<'idle' | 'pending' | 'processing' | 'completed' | 'error'>('idle');
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const pollAttemptsRef = useRef(0);
+  const keyStatsRequestRef = useRef<{ emiten: string; generation: number; promise: Promise<KeyStatsData | null> } | null>(null);
+  const storyGenerationRef = useRef(0);
+  const storyBusyRef = useRef(false);
 
   // Date state lifted from InputForm
   const [fromDate, setFromDate] = useState(getDefaultDate());
@@ -99,6 +101,9 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
   }, [selectedStock]);
 
   const handleSubmit = async (data: StockInput) => {
+    const generation = ++storyGenerationRef.current;
+    storyBusyRef.current = false;
+    keyStatsRequestRef.current = null;
     window.dispatchEvent(new CustomEvent('stockbit-fetch-start'));
     setLoading(true);
     setError(null);
@@ -121,45 +126,50 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
       });
 
       const json = await response.json();
+      if (generation !== storyGenerationRef.current) return;
 
       if (!json.success) {
         throw new Error(json.error || 'Failed to analyze stock');
       }
 
+      const emiten = json.data.input.emiten.toUpperCase();
+      const promise: Promise<KeyStatsData | null> = fetch(`/api/keystats?emiten=${encodeURIComponent(emiten)}`)
+        .then(r => r.json()).then(stats => {
+          const value = stats.success ? stats.data : null;
+          if (generation === storyGenerationRef.current) setKeyStats(value);
+          return value;
+        }).catch(() => null);
+      // Assign the exact result-owner promise before enabling Story via setResult.
+      keyStatsRequestRef.current = { emiten, generation, promise };
       setResult(json.data);
-
-      // Fetch KeyStats after getting result
-      try {
-        const keyStatsRes = await fetch(`/api/keystats?emiten=${data.emiten}`);
-        const keyStatsJson = await keyStatsRes.json();
-        if (keyStatsJson.success) {
-          setKeyStats(keyStatsJson.data);
-        }
-      } catch (keyStatsErr) {
-        console.error('Failed to fetch key stats:', keyStatsErr);
-      }
+      await promise;
+      if (generation !== storyGenerationRef.current) return;
 
       // Fetch existing Agent Story if available
       try {
         const storyRes = await fetch(`/api/analyze-story?emiten=${data.emiten}`);
         const storyJson = await storyRes.json();
         if (storyJson.success && storyJson.data && Array.isArray(storyJson.data)) {
-          setAgentStories(storyJson.data);
-          const latestStory = storyJson.data[0];
-          if (latestStory.status === 'completed') {
+          if (generation !== storyGenerationRef.current || storyBusyRef.current) return;
+          const matching = storyJson.data.filter((story: AgentStoryResult) => {
+            const period = story.strategi_trading?.story_context?.brokerPeriod;
+            return story.status === 'completed' && period?.fromDate === json.data.input.fromDate && period?.toDate === json.data.input.toDate;
+          });
+          const active = readActiveStory();
+          if (active && active.emiten === emiten && active.input.fromDate === json.data.input.fromDate && active.input.toDate === json.data.input.toDate) {
+            resumeStoryPolling(active);
+          } else if (matching.length) {
+            setAgentStories(matching);
             setStoryStatus('completed');
-          } else if (latestStory.status === 'processing' || latestStory.status === 'pending') {
-            // Resume polling only (GET) — do NOT create a new analysis via POST
-            resumeStoryPolling(data.emiten);
           }
         }
       } catch (storyErr) {
         console.error('Failed to fetch existing agent story:', storyErr);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (generation === storyGenerationRef.current) setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
-      setLoading(false);
+      if (generation === storyGenerationRef.current) setLoading(false);
       window.dispatchEvent(new CustomEvent('stockbit-fetch-end'));
     }
   };
@@ -172,6 +182,7 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
+      storyGenerationRef.current += 1;
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
@@ -200,94 +211,93 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
     return () => window.removeEventListener('token-refreshed', handleTokenRefresh);
   }, [error, selectedStock, result, fromDate, toDate]);
 
-  // Resume polling only (GET) for an in-progress story — does NOT create a new analysis
-  const MAX_POLL_ATTEMPTS = 36; // ~3 minutes at the 5s interval below — avoids polling forever on a stuck job
-  const resumeStoryPolling = (emiten: string) => {
-    setStoryStatus('processing');
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    pollAttemptsRef.current = 0;
-
-    pollIntervalRef.current = setInterval(async () => {
-      pollAttemptsRef.current += 1;
-      let reachedTerminal = false;
-
-      try {
-        const statusRes = await fetch(`/api/analyze-story?emiten=${emiten}`);
-        const statusData = await statusRes.json();
-
-        if (statusData.success && statusData.data && Array.isArray(statusData.data)) {
-          const stories = statusData.data;
-          setAgentStories(stories);
-
-          const latest = stories[0];
-          if (latest.status === 'completed') {
-            reachedTerminal = true;
-            setStoryStatus('completed');
-          } else if (latest.status === 'error') {
-            reachedTerminal = true;
-            setStoryStatus('error');
-          } else if (latest.status === 'processing' || latest.status === 'pending') {
-            setStoryStatus('processing');
-          }
-        }
-      } catch (err) {
-        console.error('Polling error:', err);
-      }
-
-      if (reachedTerminal || pollAttemptsRef.current >= MAX_POLL_ATTEMPTS) {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-        if (!reachedTerminal) {
-          // Gave up waiting on a stuck job — surface a clear error instead of spinning forever
-          setStoryStatus('error');
-          setAgentStories((prev) =>
-            prev.length > 0
-              ? [
-                  {
-                    ...prev[0],
-                    status: 'error',
-                    error_message: 'Analisis memakan waktu terlalu lama. Coba lagi nanti.',
-                  },
-                  ...prev.slice(1),
-                ]
-              : prev
-          );
-        }
-      }
-    }, 5000);
+  const readActiveStory = (): { id: number; context: string; emiten: string; input: StockInput } | null => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('active-story-job') || 'null');
+      return saved && Number.isSafeInteger(saved.id) && typeof saved.context === 'string' && saved.input ? saved : null;
+    } catch { return null; }
   };
 
-  // User-initiated: create a NEW analysis via POST + start polling
+  // Browser wait errors never mutate the durable generation state or resubmit.
+  const resumeStoryPolling = (job: { id: number; context: string; emiten: string; input: StockInput }) => {
+    const generation = storyGenerationRef.current;
+    storyBusyRef.current = true;
+    setStoryStatus('pending');
+    if (pollIntervalRef.current) clearTimeout(pollIntervalRef.current);
+    const poll = async () => {
+      if (generation !== storyGenerationRef.current) return;
+      let terminal = false;
+      try {
+        const response = await fetch(`/api/analyze-story?id=${job.id}&context=${encodeURIComponent(job.context)}`, { cache: 'no-store' });
+        const json = await response.json();
+        if (generation !== storyGenerationRef.current) return;
+        if (json.success && json.data?.id === job.id && json.data.thinking_level === job.context) {
+          const story: AgentStoryResult = json.data;
+          setAgentStories(prev => [story, ...prev.filter(s => s.id !== job.id)]);
+          setStoryStatus(story.status);
+          terminal = story.status === 'completed' || story.status === 'error';
+          if (terminal) storyBusyRef.current = false;
+        }
+      } catch { /* Connection/wait error, not confirmed job failure. */ }
+      finally {
+        if (!terminal && generation === storyGenerationRef.current) pollIntervalRef.current = setTimeout(poll, 3000);
+      }
+    };
+    void poll();
+  };
+
+  useEffect(() => {
+    const active = readActiveStory();
+    if (active && (!selectedStock || selectedStock.toUpperCase() === active.emiten)) resumeStoryPolling(active);
+    // Refresh resumes GET only; never POST again automatically.
+  }, []);
+
+  // Submit durable work, then observe its exact ID; never retry on a wait timeout.
   const handleAnalyzeStory = async () => {
-    if (!result) return;
+    if (!result || storyBusyRef.current) return;
+    storyBusyRef.current = true;
+    const generation = storyGenerationRef.current;
+    if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
 
     window.dispatchEvent(new CustomEvent('stockbit-fetch-start'));
     const emiten = result.input.emiten.toUpperCase();
     setStoryStatus('pending');
+    setAgentStories([]);
 
     try {
-      // Trigger background analysis
+      const matchingStats = keyStatsRequestRef.current?.emiten === emiten && keyStatsRequestRef.current.generation === generation
+        ? await keyStatsRequestRef.current.promise : null;
+      if (generation !== storyGenerationRef.current) return;
+      // Short submission only. Independent worker owns Hermes execution.
       const response = await fetch('/api/analyze-story', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           emiten,
-          keyStats: keyStats
+          analysis: result,
+          keyStats: matchingStats,
+          keyStatsEmiten: emiten
         })
       });
 
       const data = await response.json();
-      if (!data.success) throw new Error(data.error);
-
-      // Start polling for status
-      resumeStoryPolling(emiten);
+      if (generation !== storyGenerationRef.current) return;
+      if (!response.ok || !data.success) throw new Error(data.error || 'Gagal menganalisis story.');
+      setAgentStories(prev => [data.data, ...prev.filter(s => s.id !== data.data.id)]);
+      const job = { id: data.data.id, context: data.data.thinking_level, emiten, input: result.input };
+      try { localStorage.setItem('active-story-job', JSON.stringify(job)); } catch { /* Storage may be disabled. */ }
+      if (data.data.status === 'completed' || data.data.status === 'error') {
+        setStoryStatus(data.data.status);
+        storyBusyRef.current = false;
+      } else resumeStoryPolling(job);
 
     } catch (err) {
-      console.error('Failed to start analysis:', err);
+      if (generation !== storyGenerationRef.current) return;
+      storyBusyRef.current = false;
       setStoryStatus('error');
+      setAgentStories(prev => [{ emiten, status: 'error', error_message: err instanceof Error ? err.message : 'Gagal menganalisis story. Hasil Cek Bandar tetap tersedia.' }, ...prev]);
     } finally {
+      // Accepted jobs retain the busy guard until GET observes a terminal state.
       window.dispatchEvent(new CustomEvent('stockbit-fetch-end'));
     }
   };
@@ -483,17 +493,13 @@ export default function Calculator({ selectedStock }: CalculatorProps) {
               </div>
             </div>
 
-            {/* Agent Story Section - Full Width */}
-            <div style={{ gridColumn: '1 / -1', width: '100%' }}>
-              {(agentStories.length > 0 || storyStatus !== 'idle') && (
-                <AgentStoryCard
-                  stories={agentStories}
-                  status={storyStatus}
-                  onRetry={() => handleAnalyzeStory()}
-                />
-              )}
-            </div>
+
           </div>
+        </div>
+      )}
+      {(agentStories.length > 0 || storyStatus !== 'idle') && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <AgentStoryCard stories={agentStories} status={storyStatus} />
         </div>
       )}
     </div>

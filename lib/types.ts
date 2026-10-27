@@ -242,6 +242,10 @@ export interface ChecklistKatalis {
 }
 
 export interface StrategiTrading {
+  harmonic_analysis?: import('./harmonic').HarmonicAnalysis;
+  weekly_harmonic_analysis?: import('./harmonic-weekly').WeeklyHarmonicAnalysis;
+  experimental_harmonic_analysis?: import('./harmonic-zigzag').ZigzagHarmonicAnalysis;
+  story_context?: { context: string; brokerPeriod: { fromDate: string; toDate: string }; keyStatsEmiten: string | null; submittedAt: string };
   tipe_saham: string;
   target_entry: string;
   exit_strategy: {

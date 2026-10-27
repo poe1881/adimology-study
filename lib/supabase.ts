@@ -390,10 +390,24 @@ export async function updatePreviousDayRealPrice(emiten: string, currentDate: st
 /**
  * Create a new agent story record with pending status
  */
-export async function createAgentStory(emiten: string) {
+// Local Story context uses existing thinking_level metadata; no schema migration.
+export async function getAgentStoryById(id: number) {
+  const { data, error } = await supabase.from('agent_stories').select('*').eq('id', id).maybeSingle();
+  if (error) throw new Error('Story lookup unavailable');
+  return data;
+}
+export async function getAgentStoryByContext(emiten: string, context: string) {
+  const { data, error } = await supabase.from('agent_stories').select('*')
+    .eq('emiten', emiten).eq('thinking_level', context)
+    .order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (error) throw new Error('Story lookup unavailable');
+  return data;
+}
+
+export async function createAgentStory(emiten: string, context?: string) {
   const { data, error } = await supabase
     .from('agent_stories')
-    .insert({ emiten, status: 'pending' })
+    .insert({ emiten, status: 'pending', ...(context ? { thinking_level: context } : {}) })
     .select()
     .single();
 
@@ -409,7 +423,7 @@ export async function createAgentStory(emiten: string) {
  * Update agent story with result or error
  */
 export async function updateAgentStory(id: number, data: {
-  status: 'processing' | 'completed' | 'error';
+  status?: 'pending' | 'processing' | 'completed' | 'error';
   matriks_story?: object[];
   swot_analysis?: object;
   checklist_katalis?: object[];

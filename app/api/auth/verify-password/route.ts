@@ -1,28 +1,22 @@
+import { verifyPassword } from '@/lib/password';
 import { NextRequest, NextResponse } from 'next/server';
-import { getProfileSetting } from '@/lib/supabase';
 import { setSession } from '@/lib/auth';
+import { passwordVersion, readPasswordState } from '@/lib/auth-settings';
 
-async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { password } = body;
 
-    if (!password) {
+    if (typeof password !== 'string' || !password || password.length > 1024) {
       return NextResponse.json(
         { success: false, error: 'Password is required' },
         { status: 400 }
       );
     }
 
-    const storedHash = await getProfileSetting('password_hash');
+    const { hash: storedHash } = await readPasswordState();
 
     if (!storedHash) {
       return NextResponse.json(
@@ -31,12 +25,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const inputHash = await hashPassword(password);
-    const valid = inputHash === storedHash;
+    const valid = await verifyPassword(password, storedHash);
 
     if (valid) {
       const response = NextResponse.json({ success: true, valid: true });
-      await setSession(response);
+      await setSession(response, true, await passwordVersion(storedHash));
       return response;
     }
 

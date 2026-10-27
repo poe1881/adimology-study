@@ -4,8 +4,12 @@ import { NextRequest, NextResponse } from 'next/server';
 const SESSION_NAME = 'adimology_session';
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
-// Use AUTH_SECRET from env or fallback for dev (Warning during production)
-const AUTH_SECRET = process.env.AUTH_SECRET || 'dev_secret_please_change_in_production';
+// No public fallback: a missing or weak secret must fail closed.
+function getAuthSecret() {
+  const secret = process.env.AUTH_SECRET;
+  if (!secret || secret.length < 32) throw new Error('AUTH_SECRET must contain at least 32 characters');
+  return secret;
+}
 
 /**
  * Basic HMAC-based token signing using Web Crypto API
@@ -13,7 +17,7 @@ const AUTH_SECRET = process.env.AUTH_SECRET || 'dev_secret_please_change_in_prod
  */
 async function getCryptoKey() {
   const encoder = new TextEncoder();
-  const keyData = encoder.encode(AUTH_SECRET);
+  const keyData = encoder.encode(getAuthSecret());
   return await crypto.subtle.importKey(
     'raw',
     keyData,
@@ -45,7 +49,9 @@ export async function createSessionToken(payload: any): Promise<string> {
 
 export async function verifySessionToken(token: string): Promise<any | null> {
   try {
-    const [header, body, signature] = token.split('.');
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, signature] = parts;
     if (!header || !body || !signature) return null;
 
     const key = await getCryptoKey();
@@ -64,7 +70,7 @@ export async function verifySessionToken(token: string): Promise<any | null> {
     if (!isValid) return null;
 
     const payload = JSON.parse(atob(body));
-    if (payload.exp < Date.now()) return null;
+    if (!Number.isFinite(payload.exp) || payload.exp <= Date.now() || payload.authenticated !== true) return null;
 
     return payload;
   } catch (error) {
@@ -75,8 +81,8 @@ export async function verifySessionToken(token: string): Promise<any | null> {
 /**
  * Set session cookie in Response
  */
-export async function setSession(response: NextResponse, verified: boolean = true) {
-  const token = await createSessionToken({ authenticated: true, verified });
+export async function setSession(response: NextResponse, verified: boolean = true, credentialVersion?: string) {
+  const token = await createSessionToken({ authenticated: true, verified, credentialVersion });
   
   response.cookies.set(SESSION_NAME, token, {
     httpOnly: true,

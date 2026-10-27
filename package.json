@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "story:worker": "node --env-file=.env.local --import tsx scripts/story-worker.ts",
+    "test:auth": "node --import tsx --test tests/auth-security.test.mts",
     "migrate": "node scripts/run-migrations.js",
     "build": "next build",
     "start": "next start"

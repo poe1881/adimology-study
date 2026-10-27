@@ -13,6 +13,9 @@
 # testing
 /coverage
 
+# private local Story queue (sanitized market data, no credentials)
+/.local/
+
 # netlify
 .netlify/
 /.next/

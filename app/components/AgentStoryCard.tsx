@@ -3,16 +3,25 @@
 import { useState, useEffect, useRef } from 'react';
 import type { AgentStoryResult, MatriksStoryItem, ChecklistKatalis } from '@/lib/types';
 import { renderWithLinks } from '@/lib/utils';
+import { HarmonicPanel } from './HarmonicPanel';
+import { HarmonicWeeklyPanel } from './HarmonicWeeklyPanel';
+import { HarmonicZigzagPanel } from './HarmonicZigzagPanel';
 
 interface AgentStoryCardProps {
   stories: AgentStoryResult[];
   status: 'idle' | 'pending' | 'processing' | 'completed' | 'error';
-  onRetry?: () => void;
+
 }
 
-export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryCardProps) {
+export default function AgentStoryCard({ stories, status }: AgentStoryCardProps) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const prevStatusRef = useRef(status);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (status !== 'pending' && status !== 'processing') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
 
   // Update selectedId when new stories arrive or when analysis completes
   useEffect(() => {
@@ -37,10 +46,12 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
       <div className="glass-card" style={{ padding: '2rem', textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }}></div>
         <p style={{ color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-          {status === 'pending' ? 'Memulai analisis...' : 'AI sedang menganalisis berita...'}
+          {status === 'pending' ? 'Memulai analisis...' : 'AI sedang menganalisis data Stockbit dan kalkulasi...'}
         </p>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-          Proses ini membutuhkan waktu beberapa menit
+          {now - Date.parse(stories[0]?.created_at || new Date(now).toISOString()) >= 120000
+            ? 'Analisis masih berjalan. Lewat 2 menit bukan kegagalan; batas tunggu data Hermes 3 menit sejak proses dimulai.'
+            : 'Antrean lokal persisten; analisis data saja tanpa berita. Anda boleh refresh; status dipulihkan lewat ID pekerjaan.'}
         </p>
       </div>
     );
@@ -57,15 +68,9 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
         <p style={{ color: 'var(--accent-warning)', marginBottom: '1rem' }}>
           ❌ {stories[0]?.error_message || 'Gagal menganalisis story'}
         </p>
-        {onRetry && (
-          <button 
-            onClick={onRetry}
-            className="btn btn-primary"
-            style={{ fontSize: '0.85rem' }}
-          >
-            🔄 Coba Lagi
-          </button>
-        )}
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+          Pekerjaan ini tidak dikirim ulang otomatis. Untuk hasil/batal yang belum terkonfirmasi, periksa status worker sebelum membuat analisis baru; refresh hanya membaca status ID yang sama.
+        </p>
       </div>
     );
   }
@@ -106,7 +111,7 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
             padding: '2px 8px',
             whiteSpace: 'nowrap'
           }}>
-            {data.model}{data.thinking_level ? ` · ${data.thinking_level}` : ''}
+            {data.model}{data.thinking_level ? ` · ${data.thinking_level.startsWith('local-data:') ? 'Data saja · tanpa riset berita' : data.thinking_level}` : ''}
           </span>
         )}
 
@@ -152,6 +157,11 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
         )}
       </div>
 
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+        {data.strategi_trading?.story_context
+          ? `Periode broker ${data.strategi_trading.story_context.brokerPeriod.fromDate} – ${data.strategi_trading.story_context.brokerPeriod.toDate}; konteks tersimpan, bukan pembaruan otomatis. Harga/orderbook live atau fallback; timestamp historis tidak terverifikasi.`
+          : 'Versi lama: konteks periode dan kelengkapan KeyStats belum terverifikasi; jangan anggap sesuai kalkulasi saat ini.'}
+      </p>
       {/* Section 1: Matriks Story */}
       {data.matriks_story && data.matriks_story.length > 0 && (
         <div style={{ marginBottom: '1.5rem' }}>
@@ -408,7 +418,7 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
       )}
 
       {/* Section 5: KeyStat Signal */}
-      {data.keystat_signal && (
+      {(data.keystat_signal || data.strategi_trading?.harmonic_analysis || data.strategi_trading?.weekly_harmonic_analysis || data.strategi_trading?.experimental_harmonic_analysis) && (
         <div style={{ marginBottom: '1.5rem' }}>
           <h4 style={{ 
             fontSize: '1rem', 
@@ -417,7 +427,7 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
             fontWeight: 500,
             opacity: 0.9
           }}>
-            5. Fundamental Signal (Key Statistics)
+            5. Fundamental Signal &amp; Harmonic / PRZ
           </h4>
           <div style={{ 
             padding: '1rem',
@@ -428,8 +438,14 @@ export default function AgentStoryCard({ stories, status, onRetry }: AgentStoryC
             lineHeight: 1.6,
             color: 'var(--text-secondary)'
           }}>
-            {renderWithLinks(data.keystat_signal)}
+            <h5 style={{ margin: '0 0 0.5rem' }}>Fundamental — Key Statistics</h5>
+            {renderWithLinks(data.keystat_signal || 'KeyStats tidak tersedia untuk konteks ini.')}
           </div>
+          {data.strategi_trading?.harmonic_analysis ? (
+            <HarmonicPanel analysis={data.strategi_trading.harmonic_analysis} />
+          ) : <p>Teknikal Harmonic / PRZ belum tersedia pada versi Story ini; tidak ada pola atau target yang dapat disimpulkan.</p>}
+          <HarmonicWeeklyPanel analysis={data.strategi_trading?.weekly_harmonic_analysis} />
+          <HarmonicZigzagPanel analysis={data.strategi_trading?.experimental_harmonic_analysis} />
         </div>
       )}
 

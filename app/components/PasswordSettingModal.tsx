@@ -13,6 +13,7 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
   const [enabled, setEnabled] = useState(false);
   const [hasPassword, setHasPassword] = useState(false);
   const [password, setPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -29,6 +30,7 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
   useEffect(() => {
     if (isOpen) {
       fetchStatus();
+      setCurrentPassword('');
       setPassword('');
       setConfirmPassword('');
       setError('');
@@ -64,8 +66,8 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
         setError('Password tidak boleh kosong.');
         return;
       }
-      if (password.length < 4) {
-        setError('Password minimal 4 karakter.');
+      if (password.length < 12) {
+        setError('Password minimal 12 karakter.');
         return;
       }
       if (password !== confirmPassword) {
@@ -76,10 +78,21 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
 
     setSaving(true);
     try {
+      if (hasPassword) {
+        const verification = await fetch('/api/auth/verify-password', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: currentPassword }),
+        });
+        const result = await verification.json();
+        if (!verification.ok || !result.valid) {
+          setError('Password saat ini tidak valid.');
+          return;
+        }
+      }
       const res = await fetch('/api/auth/set-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password, enabled }),
+        body: JSON.stringify({ password, enabled, currentPassword }),
       });
 
       const data = await res.json();
@@ -154,6 +167,14 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
               </button>
             </div>
 
+            {hasPassword && (
+              <div className="password-input-group">
+                <label className="password-label" htmlFor="current-password">Password saat ini</label>
+                <input id="current-password" type="password" autoComplete="current-password"
+                  value={currentPassword} onChange={e => setCurrentPassword(e.target.value)}
+                  className="password-gate-input" placeholder="Verifikasi pemilik sebelum mengubah pengaturan" />
+              </div>
+            )}
             {enabled && (
               <div className="password-form-section">
                 <div className="password-input-group">
@@ -165,7 +186,7 @@ export default function PasswordSettingModal({ isOpen, onClose }: PasswordSettin
                       type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={(e) => { setPassword(e.target.value); setError(''); }}
-                      placeholder="Minimal 4 karakter"
+                      placeholder="Minimal 12 karakter"
                       className="password-gate-input"
                     />
                     <button
